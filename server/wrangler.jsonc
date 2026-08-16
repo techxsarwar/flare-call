@@ -17,7 +17,7 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["CallRoom"]
+      "new_sqlite_classes": ["CallRoom"]
     }
   ],
   "observability": {
