@@ -13,7 +13,9 @@ import {
   Radio,
   Copy,
   Check,
-  ExternalLink
+  ExternalLink,
+  QrCode,
+  Share2
 } from "lucide-react";
 import { AudioVisualizer } from "./AudioVisualizer";
 
@@ -38,6 +40,7 @@ export function Lobby({
   onToggleAudio,
   onToggleVideo,
   onOpenSettings,
+  onOpenShare,
   audioAnalyser
 }) {
   const videoRef = useRef(null);
@@ -116,6 +119,12 @@ export function Lobby({
           <span className="feature-pill">
             <Radio size={14} /> Edge Signaling
           </span>
+          {roomId && onOpenShare && (
+            <button className="btn-share-header" onClick={onOpenShare} title="Share Call & QR Code">
+              <QrCode size={16} />
+              <span>Share QR</span>
+            </button>
+          )}
           <button className="btn-settings-header" onClick={onOpenSettings} title="Device Settings">
             <Settings size={18} />
           </button>
@@ -212,9 +221,11 @@ export function Lobby({
                 <h4>Join Call: <code style={{ color: "#4ade80", fontSize: "14px" }}>{roomId}</code></h4>
                 <p>You have been invited to join this room.</p>
               </div>
-              <button className="btn-action-primary" style={{ background: "#16a34a" }} onClick={() => onJoinRoom(cleanRoomId(roomId))}>
-                Join Now <ArrowRight size={16} />
-              </button>
+              <div className="action-box-actions">
+                <button className="btn-action-primary" style={{ background: "#16a34a" }} onClick={() => onJoinRoom(cleanRoomId(roomId))}>
+                  Join Now <ArrowRight size={16} />
+                </button>
+              </div>
             </div>
           ) : (
             /* Quick Create Room */
@@ -264,7 +275,7 @@ export function Lobby({
           <div className="multiplatform-banner">
             <Globe size={16} className="text-emerald-400 shrink-0" />
             <p>
-              Compatible with Web browsers, Android apps, and the <strong>Java Calling Client</strong>.
+              Compatible with Web browsers, iOS Safari, Android Chrome, and the <strong>Java Calling Client</strong>.
             </p>
           </div>
 

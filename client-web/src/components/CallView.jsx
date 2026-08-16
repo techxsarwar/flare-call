@@ -17,7 +17,9 @@ import {
   Maximize,
   Minimize,
   PhoneCall,
-  Volume2
+  Volume2,
+  QrCode,
+  Share2
 } from "lucide-react";
 import { AudioVisualizer } from "./AudioVisualizer";
 
@@ -37,6 +39,7 @@ export function CallView({
   onEndCall,
   onOpenChat,
   onOpenSettings,
+  onOpenShare,
   unreadCount,
   callDuration,
   stats,
@@ -45,6 +48,7 @@ export function CallView({
 }) {
   const localVideoRef = useRef(null);
   const remoteVideoRefs = useRef(new Map());
+  const remoteAudioRefs = useRef(new Map());
   const [copiedLink, setCopiedLink] = useState(false);
   const [showStatsHud, setShowStatsHud] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -56,12 +60,19 @@ export function CallView({
     }
   }, [localStream, isVideoMuted]);
 
-  // Bind remote video streams
+  // Bind remote video & audio streams
   useEffect(() => {
     remoteStreams.forEach((stream, peerId) => {
-      const el = remoteVideoRefs.current.get(peerId);
-      if (el && el.srcObject !== stream) {
-        el.srcObject = stream;
+      const vEl = remoteVideoRefs.current.get(peerId);
+      if (vEl && vEl.srcObject !== stream) {
+        vEl.srcObject = stream;
+        vEl.play().catch(e => console.log("[WebRTC] Video autoPlay waiting for user gesture:", e));
+      }
+
+      const aEl = remoteAudioRefs.current.get(peerId);
+      if (aEl && aEl.srcObject !== stream) {
+        aEl.srcObject = stream;
+        aEl.play().catch(e => console.log("[WebRTC] Audio autoPlay waiting for user gesture:", e));
       }
     });
   }, [remoteStreams]);
@@ -75,10 +86,10 @@ export function CallView({
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
+      document.documentElement.requestFullscreen().catch(() => {});
       setIsFullscreen(true);
     } else {
-      document.exitFullscreen();
+      document.exitFullscreen().catch(() => {});
       setIsFullscreen(false);
     }
   };
@@ -101,10 +112,14 @@ export function CallView({
             <span className="call-timer">{formatDuration(callDuration)}</span>
           </div>
 
-          <div className="room-badge-pill" onClick={copyRoomLink} title="Click to copy invite link">
+          <div
+            className="room-badge-pill clickable-badge"
+            onClick={onOpenShare || copyRoomLink}
+            title="Click to share room or show QR code"
+          >
             <span className="room-label">Room:</span>
             <span className="room-id">{roomId}</span>
-            {copiedLink ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+            <QrCode size={14} className="text-indigo-400" />
           </div>
 
           <div className="participants-count-pill">
@@ -114,6 +129,16 @@ export function CallView({
         </div>
 
         <div className="callview-header-actions">
+          {/* Share & QR code button */}
+          <button
+            className="btn-header-pill btn-share-pill"
+            onClick={onOpenShare}
+            title="Share Call & Show Mobile QR Code"
+          >
+            <Share2 size={15} className="text-indigo-400" />
+            <span>Share & QR</span>
+          </button>
+
           <button
             className={`btn-header-pill ${showStatsHud ? "active" : ""}`}
             onClick={() => setShowStatsHud(!showStatsHud)}
@@ -180,7 +205,7 @@ export function CallView({
             </div>
 
             <h3>Waiting for someone to join...</h3>
-            <p>Share this link or room code with your friend, client, or teammate to connect instantly.</p>
+            <p>Scan the QR code with your phone or share the room link to connect instantly.</p>
 
             <div className="invite-box">
               <input
@@ -189,17 +214,24 @@ export function CallView({
                 value={`${window.location.origin}/?room=${encodeURIComponent(roomId)}`}
                 className="invite-link-input"
               />
-              <button className="btn-copy-invite" onClick={copyRoomLink}>
-                {copiedLink ? (
-                  <>
-                    <Check size={16} /> Copied!
-                  </>
-                ) : (
-                  <>
-                    <Copy size={16} /> Copy Invite Link
-                  </>
+              <div className="waiting-action-row">
+                <button className="btn-copy-invite" onClick={copyRoomLink}>
+                  {copiedLink ? (
+                    <>
+                      <Check size={16} /> Copied!
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={16} /> Copy Invite Link
+                    </>
+                  )}
+                </button>
+                {onOpenShare && (
+                  <button className="btn-qr-invite" onClick={onOpenShare}>
+                    <QrCode size={16} /> Show Mobile QR Code
+                  </button>
                 )}
-              </button>
+              </div>
             </div>
           </div>
         ) : (
@@ -211,12 +243,28 @@ export function CallView({
 
               return (
                 <div key={peer.peerId} className="peer-video-tile">
+                  {/* Dedicated audio element ensuring mobile uninterrupted audio */}
+                  <audio
+                    ref={el => {
+                      if (el) {
+                        remoteAudioRefs.current.set(peer.peerId, el);
+                        if (stream && el.srcObject !== stream) {
+                          el.srcObject = stream;
+                          el.play().catch(() => {});
+                        }
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                  />
+
                   <video
                     ref={el => {
                       if (el) {
                         remoteVideoRefs.current.set(peer.peerId, el);
                         if (stream && el.srcObject !== stream) {
                           el.srcObject = stream;
+                          el.play().catch(() => {});
                         }
                       }
                     }}
@@ -309,6 +357,12 @@ export function CallView({
           >
             {isScreenSharing ? <MonitorOff size={20} /> : <MonitorUp size={20} />}
             <span className="toolbar-label">{isScreenSharing ? "Stop Share" : "Share"}</span>
+          </button>
+
+          {/* Share / Invite */}
+          <button className="btn-toolbar normal" onClick={onOpenShare} title="Share Call & QR Code">
+            <Share2 size={20} />
+            <span className="toolbar-label">Share</span>
           </button>
 
           {/* In-Call Chat Drawer */}

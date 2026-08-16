@@ -6,6 +6,20 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CALL_ROOMS",
+        "class_name": "CallRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["CallRoom"]
+    }
+  ],
   "observability": {
     "enabled": true
   }

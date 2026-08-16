@@ -1,16 +1,21 @@
 /**
  * FlareCall WebRTC PeerConnection Engine
- * Handles ICE, SDP negotiation, camera/mic/screen streams, and real-time stats diagnostics.
+ * Handles ICE candidate queuing, SDP negotiation, camera/mic/screen streams,
+ * robust mobile ontrack handling, and real-time connection diagnostics.
  */
 
 export const RTC_CONFIG = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
     { urls: "stun:stun.cloudflare.com:3478" },
     { urls: "stun:stun.services.mozilla.com" }
   ],
-  iceCandidatePoolSize: 10
+  iceCandidatePoolSize: 10,
+  bundlePolicy: "max-bundle"
 };
 
 export class WebRTCService {
@@ -19,6 +24,8 @@ export class WebRTCService {
     this.screenStream = null;
     this.peerConnections = new Map(); // peerId -> RTCPeerConnection
     this.remoteStreams = new Map(); // peerId -> MediaStream
+    this.iceCandidateQueues = new Map(); // peerId -> RTCIceCandidateInit[]
+
     this.onRemoteStream = options.onRemoteStream || (() => {});
     this.onRemoteStreamRemoved = options.onRemoteStreamRemoved || (() => {});
     this.onIceCandidate = options.onIceCandidate || (() => {});
@@ -29,14 +36,21 @@ export class WebRTCService {
     this.audioContext = null;
     this.localAnalyser = null;
     this.remoteAnalyser = null;
+    this.localSource = null;
+    this.remoteSource = null;
   }
 
   /**
-   * Acquire local camera and microphone stream
+   * Acquire local camera and microphone stream with graceful fallbacks
    */
   async getLocalMedia(constraints = { audio: true, video: true }) {
     if (this.localStream) {
       this.stopLocalMedia();
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.warn("[WebRTC] navigator.mediaDevices.getUserMedia is not available. Check HTTPS / secure context.");
+      return null;
     }
 
     const defaultConstraints = {
@@ -65,9 +79,63 @@ export class WebRTCService {
       finalConstraints.video = { ...finalConstraints.video, deviceId: { exact: constraints.videoDeviceId } };
     }
 
-    this.localStream = await navigator.mediaDevices.getUserMedia(finalConstraints);
-    this.setupAudioAnalyser(this.localStream, "local");
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia(finalConstraints);
+    } catch (err) {
+      console.warn("[WebRTC] Failed to acquire video+audio, trying audio-only fallback:", err);
+      // Fallback: Try audio only if video failed (e.g. camera busy or not available)
+      if (finalConstraints.video && finalConstraints.audio) {
+        try {
+          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: finalConstraints.audio, video: false });
+        } catch (audioErr) {
+          console.warn("[WebRTC] Audio-only fallback also failed:", audioErr);
+          this.localStream = null;
+          throw audioErr;
+        }
+      } else {
+        this.localStream = null;
+        throw err;
+      }
+    }
+
+    if (this.localStream) {
+      this.setupAudioAnalyser(this.localStream, "local");
+      // Update tracks on all active peer connections
+      for (const [peerId, pc] of this.peerConnections.entries()) {
+        this.attachLocalTracks(pc);
+      }
+    }
+
     return this.localStream;
+  }
+
+  /**
+   * Helper: Attach or replace local media tracks on an active RTCPeerConnection
+   */
+  attachLocalTracks(pc) {
+    if (!pc || !this.localStream) return;
+
+    try {
+      const senders = pc.getSenders();
+      const localTracks = this.localStream.getTracks();
+
+      localTracks.forEach(track => {
+        const existingSender = senders.find(s => s.track && s.track.kind === track.kind);
+        if (existingSender) {
+          existingSender.replaceTrack(track).catch(e => {
+            console.warn(`[WebRTC] Failed to replace ${track.kind} track:`, e);
+          });
+        } else {
+          try {
+            pc.addTrack(track, this.localStream);
+          } catch (e) {
+            console.warn(`[WebRTC] Failed to add ${track.kind} track:`, e);
+          }
+        }
+      });
+    } catch (e) {
+      console.warn("[WebRTC] attachLocalTracks error:", e);
+    }
   }
 
   /**
@@ -75,23 +143,28 @@ export class WebRTCService {
    */
   async startScreenShare() {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        throw new Error("Screen sharing is not supported on this device/browser.");
+      }
+
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { cursor: "always" },
         audio: true
       });
 
       const screenTrack = this.screenStream.getVideoTracks()[0];
+      if (screenTrack) {
+        screenTrack.onended = () => {
+          this.stopScreenShare();
+        };
 
-      screenTrack.onended = () => {
-        this.stopScreenShare();
-      };
-
-      // Replace video tracks on all active peer connections
-      for (const [peerId, pc] of this.peerConnections.entries()) {
-        const senders = pc.getSenders();
-        const videoSender = senders.find(s => s.track && s.track.kind === "video");
-        if (videoSender) {
-          await videoSender.replaceTrack(screenTrack);
+        // Replace video tracks on all active peer connections
+        for (const [peerId, pc] of this.peerConnections.entries()) {
+          const senders = pc.getSenders();
+          const videoSender = senders.find(s => s.track && s.track.kind === "video");
+          if (videoSender) {
+            await videoSender.replaceTrack(screenTrack);
+          }
         }
       }
 
@@ -136,25 +209,25 @@ export class WebRTCService {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     this.peerConnections.set(peerId, pc);
 
-    // Add local media tracks to peer connection
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
-        pc.addTrack(track, this.localStream);
-      });
-    }
+    // Attach local media tracks if ready
+    this.attachLocalTracks(pc);
 
-    // Handle incoming remote media tracks
+    // Handle incoming remote media tracks (Mobile Safari & Chrome safe)
     pc.ontrack = (event) => {
+      console.log(`[WebRTC] Received remote track (${event.track?.kind}) from peer ${peerId}`);
       let stream = this.remoteStreams.get(peerId);
       if (!stream) {
-        stream = new MediaStream();
+        if (event.streams && event.streams[0]) {
+          stream = event.streams[0];
+        } else {
+          stream = new MediaStream();
+        }
         this.remoteStreams.set(peerId, stream);
       }
-      event.streams[0].getTracks().forEach(track => {
-        if (!stream.getTracks().some(t => t.id === track.id)) {
-          stream.addTrack(track);
-        }
-      });
+
+      if (event.track && !stream.getTracks().some(t => t.id === event.track.id)) {
+        stream.addTrack(event.track);
+      }
 
       this.setupAudioAnalyser(stream, "remote");
       this.onRemoteStream(peerId, stream);
@@ -169,11 +242,21 @@ export class WebRTCService {
 
     // Monitor connection states
     pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC] Peer ${peerId} connection state: ${pc.connectionState}`);
       this.onConnectionStateChange(peerId, pc.connectionState);
+
       if (pc.connectionState === "connected") {
         this.startStatsMonitor(peerId);
       } else if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
         this.stopStatsMonitor();
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WebRTC] Peer ${peerId} ICE state: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === "failed" && typeof pc.restartIce === "function") {
+        console.log(`[WebRTC] ICE failed for peer ${peerId}, restarting ICE...`);
+        pc.restartIce();
       }
     };
 
@@ -185,6 +268,8 @@ export class WebRTCService {
    */
   async createOffer(peerId) {
     const pc = this.getOrCreatePeerConnection(peerId);
+    this.attachLocalTracks(pc);
+
     const offer = await pc.createOffer({
       offerToReceiveAudio: true,
       offerToReceiveVideo: true
@@ -198,7 +283,11 @@ export class WebRTCService {
    */
   async handleOfferAndCreateAnswer(peerId, remoteSdp) {
     const pc = this.getOrCreatePeerConnection(peerId);
+    this.attachLocalTracks(pc);
+
     await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: remoteSdp }));
+    await this.drainQueuedIceCandidates(peerId);
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     return pc.localDescription;
@@ -211,19 +300,46 @@ export class WebRTCService {
     const pc = this.peerConnections.get(peerId);
     if (pc && pc.signalingState !== "stable") {
       await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: remoteSdp }));
+      await this.drainQueuedIceCandidates(peerId);
     }
   }
 
   /**
-   * Add ICE candidate received from remote peer
+   * Add ICE candidate received from remote peer with queuing support
    */
   async addIceCandidate(peerId, candidateInit) {
     const pc = this.peerConnections.get(peerId);
-    if (pc && pc.remoteDescription) {
+    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
       } catch (e) {
-        console.warn("Error adding ICE candidate:", e);
+        console.warn("[WebRTC] Error adding ICE candidate directly:", e);
+      }
+    } else {
+      // Buffer candidate until remote description is set
+      if (!this.iceCandidateQueues.has(peerId)) {
+        this.iceCandidateQueues.set(peerId, []);
+      }
+      this.iceCandidateQueues.get(peerId).push(candidateInit);
+      console.log(`[WebRTC] Buffered ICE candidate for peer ${peerId} (queue length: ${this.iceCandidateQueues.get(peerId).length})`);
+    }
+  }
+
+  /**
+   * Drain and apply all queued ICE candidates for a peer
+   */
+  async drainQueuedIceCandidates(peerId) {
+    const pc = this.peerConnections.get(peerId);
+    const queue = this.iceCandidateQueues.get(peerId) || [];
+    if (!pc || !pc.remoteDescription || queue.length === 0) return;
+
+    console.log(`[WebRTC] Draining ${queue.length} buffered ICE candidate(s) for peer ${peerId}`);
+    while (queue.length > 0) {
+      const candidateInit = queue.shift();
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+      } catch (e) {
+        console.warn("[WebRTC] Error adding queued ICE candidate:", e);
       }
     }
   }
@@ -276,10 +392,10 @@ export class WebRTCService {
         if (AudioContextClass) this.audioContext = new AudioContextClass();
       }
       if (this.audioContext && this.audioContext.state === "suspended") {
-        this.audioContext.resume();
+        this.audioContext.resume().catch(() => {});
       }
 
-      if (this.audioContext && stream.getAudioTracks().length > 0) {
+      if (this.audioContext && stream && stream.getAudioTracks().length > 0) {
         if (type === "local" && this.localSource) {
           try { this.localSource.disconnect(); } catch (_) {}
         }
@@ -370,6 +486,7 @@ export class WebRTCService {
     }
     this.peerConnections.clear();
     this.remoteStreams.clear();
+    this.iceCandidateQueues.clear();
   }
 
   stopLocalMedia() {

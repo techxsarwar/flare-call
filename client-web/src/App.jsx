@@ -3,20 +3,25 @@ import { Lobby } from "./components/Lobby";
 import { CallView } from "./components/CallView";
 import { ChatDrawer } from "./components/ChatDrawer";
 import { SettingsModal } from "./components/SettingsModal";
+import { ShareModal } from "./components/ShareModal";
 import { WebRTCService } from "./services/webrtc";
 import { SoundEngine } from "./services/sounds";
 
-// Cloudflare Signaling WebSocket URL
+// Cloudflare Signaling WebSocket URL (fallback or remote edge)
 const CLOUDFLARE_WORKER_WS = "wss://flare-call-signaling.aarifgmr.workers.dev/ws";
 
-const getSignalingUrl = () => {
-  // If running on local server port 8787 or explicitly requested, use localhost, otherwise connect to live Cloudflare edge
+const getSignalingUrl = (currentRoomId) => {
   const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get("local") === "true") {
-    return "ws://localhost:8787/ws";
+  const roomQuery = currentRoomId ? `?room=${encodeURIComponent(currentRoomId)}` : "";
+  if (urlParams.get("remote") === "true") {
+    return `${CLOUDFLARE_WORKER_WS}${roomQuery}`;
   }
-  return CLOUDFLARE_WORKER_WS;
+  // Connect directly to the host that served the application (e.g. wss://localhost:5173/ws or wss://192.168.31.105:5173/ws)
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/ws${roomQuery}`;
 };
+
+
 
 export default function App() {
   // Session & User State
@@ -48,11 +53,12 @@ export default function App() {
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
 
-  // Chat & UI State
+  // Modals & UI State
   const [chatMessages, setChatMessages] = useState([]);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [mediaSettings, setMediaSettings] = useState({
     audioDeviceId: "",
     videoDeviceId: "",
@@ -61,14 +67,45 @@ export default function App() {
     noiseSuppression: true
   });
   const [diagnosticsStats, setDiagnosticsStats] = useState(null);
-
-  // Incoming Call State
   const [incomingCall, setIncomingCall] = useState(null);
 
-  // Refs
+  // Dynamic state refs to prevent stale closure bugs
+  const roomIdRef = useRef(roomId);
+  const displayNameRef = useRef(displayName);
+  const myPeerIdRef = useRef(myPeerId);
+  const pendingSignalingQueueRef = useRef([]);
+
   const rtcServiceRef = useRef(null);
   const wsRef = useRef(null);
   const timerIntervalRef = useRef(null);
+  const heartbeatIntervalRef = useRef(null);
+
+  useEffect(() => {
+    roomIdRef.current = roomId;
+  }, [roomId]);
+
+  useEffect(() => {
+    displayNameRef.current = displayName;
+  }, [displayName]);
+
+  // Helper: Send signaling message safely with outbox queuing
+  const sendSignalingMessage = (msg) => {
+    const payload = {
+      ...msg,
+      roomId: msg.roomId || roomIdRef.current
+    };
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify(payload));
+      } catch (err) {
+        console.error("[Signaling] Send error:", err);
+      }
+    } else {
+      console.log("[Signaling] Queuing message for send when WS opens:", payload.type);
+      pendingSignalingQueueRef.current.push(payload);
+    }
+  };
 
   // Initialize WebRTC and Local Camera on Mount
   useEffect(() => {
@@ -85,11 +122,16 @@ export default function App() {
         });
       },
       onIceCandidate: (peerId, candidate) => {
+        // ALWAYS use the dynamic roomIdRef.current so room ID is never empty!
+        const currentRoom = roomIdRef.current;
+        if (!currentRoom) {
+          console.warn("[Signaling] ICE candidate generated before roomId set!");
+        }
         sendSignalingMessage({
           type: "ice-candidate",
-          roomId,
+          roomId: currentRoom,
           targetPeerId: peerId,
-          fromPeerId: myPeerId,
+          fromPeerId: myPeerIdRef.current,
           candidate
         });
       },
@@ -103,7 +145,7 @@ export default function App() {
 
     rtcServiceRef.current = rtc;
 
-    // Start local preview
+    // Start local preview with graceful fallback
     rtc.getLocalMedia({ audio: true, video: true })
       .then(stream => {
         setLocalStream(stream);
@@ -116,6 +158,7 @@ export default function App() {
       rtc.close();
       if (wsRef.current) wsRef.current.close();
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
   }, []);
 
@@ -129,28 +172,39 @@ export default function App() {
   const joinRoom = (targetRoomId) => {
     if (!targetRoomId) return;
     setRoomId(targetRoomId);
+    roomIdRef.current = targetRoomId;
 
     // Update browser URL query without reload
     const newUrl = `${window.location.pathname}?room=${encodeURIComponent(targetRoomId)}`;
     window.history.pushState({ path: newUrl }, "", newUrl);
 
     // Connect Signaling WebSocket
-    const wsUrl = getSignalingUrl();
+    const wsUrl = getSignalingUrl(targetRoomId);
     const ws = new WebSocket(wsUrl);
+
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log("[Signaling] Connected to Cloudflare Worker:", wsUrl);
+
+      // Send initial join packet
       ws.send(JSON.stringify({
         type: "join",
         roomId: targetRoomId,
-        peerId: myPeerId,
-        name: displayName,
+        peerId: myPeerIdRef.current,
+        name: displayNameRef.current,
         mediaState: {
           audio: !isAudioMuted,
           video: !isVideoMuted
         }
       }));
+
+      // Flush any queued signaling messages
+      while (pendingSignalingQueueRef.current.length > 0) {
+        const queuedMsg = pendingSignalingQueueRef.current.shift();
+        queuedMsg.roomId = targetRoomId;
+        ws.send(JSON.stringify(queuedMsg));
+      }
     };
 
     ws.onmessage = async (event) => {
@@ -170,8 +224,17 @@ export default function App() {
       console.error("[Signaling] WebSocket error:", err);
     };
 
+    // Heartbeat ping every 15s to keep mobile WebSocket alive
+    if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+    heartbeatIntervalRef.current = setInterval(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "ping" }));
+      }
+    }, 15000);
+
     setInCall(true);
     setCallDuration(0);
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     timerIntervalRef.current = setInterval(() => {
       setCallDuration(prev => prev + 1);
     }, 1000);
@@ -185,7 +248,7 @@ export default function App() {
     switch (msg.type) {
       case "joined": {
         const peerMap = new Map();
-        peerMap.set(myPeerId, { peerId: myPeerId, name: displayName });
+        peerMap.set(myPeerIdRef.current, { peerId: myPeerIdRef.current, name: displayNameRef.current });
         if (msg.peers) {
           msg.peers.forEach(p => {
             peerMap.set(p.peerId, p);
@@ -196,14 +259,18 @@ export default function App() {
         // If existing peers are in the room, send SDP offers to connect
         if (msg.peers && msg.peers.length > 0) {
           for (const peer of msg.peers) {
-            const offer = await rtc.createOffer(peer.peerId);
-            sendSignalingMessage({
-              type: "offer",
-              roomId: currentRoom,
-              targetPeerId: peer.peerId,
-              fromPeerId: myPeerId,
-              sdp: offer.sdp
-            });
+            try {
+              const offer = await rtc.createOffer(peer.peerId);
+              sendSignalingMessage({
+                type: "offer",
+                roomId: currentRoom,
+                targetPeerId: peer.peerId,
+                fromPeerId: myPeerIdRef.current,
+                sdp: offer.sdp
+              });
+            } catch (offerErr) {
+              console.error("[WebRTC] Error creating offer for peer:", peer.peerId, offerErr);
+            }
           }
         }
         break;
@@ -233,19 +300,27 @@ export default function App() {
       }
 
       case "offer": {
-        const answer = await rtc.handleOfferAndCreateAnswer(msg.fromPeerId, msg.sdp);
-        sendSignalingMessage({
-          type: "answer",
-          roomId: currentRoom,
-          targetPeerId: msg.fromPeerId,
-          fromPeerId: myPeerId,
-          sdp: answer.sdp
-        });
+        try {
+          const answer = await rtc.handleOfferAndCreateAnswer(msg.fromPeerId, msg.sdp);
+          sendSignalingMessage({
+            type: "answer",
+            roomId: currentRoom,
+            targetPeerId: msg.fromPeerId,
+            fromPeerId: myPeerIdRef.current,
+            sdp: answer.sdp
+          });
+        } catch (ansErr) {
+          console.error("[WebRTC] Error handling offer and creating answer:", ansErr);
+        }
         break;
       }
 
       case "answer": {
-        await rtc.handleAnswer(msg.fromPeerId, msg.sdp);
+        try {
+          await rtc.handleAnswer(msg.fromPeerId, msg.sdp);
+        } catch (ansErr) {
+          console.error("[WebRTC] Error handling answer:", ansErr);
+        }
         break;
       }
 
@@ -281,12 +356,6 @@ export default function App() {
     }
   };
 
-  const sendSignalingMessage = (msg) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  };
-
   // Media Controls
   const toggleAudio = () => {
     if (rtcServiceRef.current) {
@@ -295,7 +364,7 @@ export default function App() {
       setIsAudioMuted(nowAudio);
       sendSignalingMessage({
         type: "media-state",
-        roomId,
+        roomId: roomIdRef.current,
         mediaState: { audio: !nowAudio, video: !isVideoMuted }
       });
     }
@@ -308,7 +377,7 @@ export default function App() {
       setIsVideoMuted(nowVideo);
       sendSignalingMessage({
         type: "media-state",
-        roomId,
+        roomId: roomIdRef.current,
         mediaState: { audio: !isAudioMuted, video: !nowVideo }
       });
     }
@@ -335,8 +404,11 @@ export default function App() {
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
     }
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+    }
     if (wsRef.current) {
-      wsRef.current.send(JSON.stringify({ type: "leave", roomId, peerId: myPeerId }));
+      wsRef.current.send(JSON.stringify({ type: "leave", roomId: roomIdRef.current, peerId: myPeerIdRef.current }));
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -363,9 +435,9 @@ export default function App() {
   const sendChatMessage = (text) => {
     sendSignalingMessage({
       type: "chat",
-      roomId,
-      fromPeerId: myPeerId,
-      fromName: displayName,
+      roomId: roomIdRef.current,
+      fromPeerId: myPeerIdRef.current,
+      fromName: displayNameRef.current,
       text,
       timestamp: Date.now()
     });
@@ -404,6 +476,7 @@ export default function App() {
           onToggleAudio={toggleAudio}
           onToggleVideo={toggleVideo}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenShare={() => setIsShareModalOpen(true)}
           audioAnalyser={rtcServiceRef.current?.localAnalyser}
         />
       ) : (
@@ -427,6 +500,7 @@ export default function App() {
               setUnreadChatCount(0);
             }}
             onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenShare={() => setIsShareModalOpen(true)}
             unreadCount={unreadChatCount}
             callDuration={callDuration}
             stats={diagnosticsStats}
@@ -450,6 +524,13 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         currentSettings={mediaSettings}
         onSaveSettings={handleApplySettings}
+      />
+
+      {/* Share & QR Code Modal */}
+      <ShareModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        roomId={roomId || roomIdRef.current}
       />
     </div>
   );

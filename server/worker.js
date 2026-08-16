@@ -1,328 +1,186 @@
 /**
- * FlareCall Cloudflare Worker - WebRTC Signaling & Room Management
+ * FlareCall Cloudflare Worker - WebRTC Signaling Hub with Durable Objects
  * 
  * Developed by: Sarwar Altaf Dar <https://github.com/techxsarwar>
  * License: GNU General Public License v3.0 (GPL-3.0-or-later)
- * 
- * Provides ultra-low latency WebSocket signaling for WebRTC peer-to-peer audio/video calls.
- * Works seamlessly with Web (React/Vite), Mobile (React Native/Android), and Native Java clients.
  */
 
-// In-memory active rooms registry
-// Map<roomId, Map<peerId, { ws: WebSocket, name: string, joinedAt: number, mediaState: object }>>
-const rooms = new Map();
+export class CallRoom {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.peers = new Map(); // peerId -> { ws, name, joinedAt, mediaState }
+  }
 
-export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     const url = new URL(request.url);
+    const upgradeHeader = request.headers.get("Upgrade");
 
-    // Standard CORS headers for all incoming HTTP requests
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Upgrade, Sec-WebSocket-Key, Sec-WebSocket-Version, Sec-WebSocket-Protocol",
-    };
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
+      return new Response("Expected Upgrade: websocket", { status: 426 });
     }
 
-    // Health check endpoint
-    if (url.pathname === "/api/health") {
-      return new Response(JSON.stringify({
-        status: "healthy",
-        author: "Sarwar Altaf Dar",
-        license: "GPL-3.0-or-later",
-        timestamp: new Date().toISOString(),
-        activeRooms: rooms.size,
-        service: "FlareCall Cloudflare Signaling Worker"
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
+    const webSocketPair = new WebSocketPair();
+    const [client, server] = Object.values(webSocketPair);
 
-    // Room info endpoint
-    if (url.pathname.startsWith("/api/room/")) {
-      const roomId = url.pathname.replace("/api/room/", "").trim();
-      const room = rooms.get(roomId);
-      const peerList = room ? Array.from(room.entries()).map(([id, data]) => ({
-        id,
-        name: data.name,
-        joinedAt: data.joinedAt,
-        mediaState: data.mediaState
-      })) : [];
+    server.accept();
+    this.handleSession(server);
 
-      return new Response(JSON.stringify({
-        roomId,
-        exists: !!room,
-        peerCount: peerList.length,
-        peers: peerList
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-
-    // Signaling WebSocket upgrade endpoint (/ws or /signaling)
-    if (url.pathname === "/ws" || url.pathname === "/signaling") {
-      const upgradeHeader = request.headers.get("Upgrade");
-      if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
-        return new Response("Expected Upgrade: websocket", { status: 426, headers: corsHeaders });
-      }
-
-      const webSocketPair = new WebSocketPair();
-      const [client, server] = Object.values(webSocketPair);
-
-      server.accept();
-      handleWebSocketSession(server);
-
-      return new Response(null, {
-        status: 101,
-        webSocket: client,
-        headers: corsHeaders
-      });
-    }
-
-    // Root Welcome endpoint
-    const wsProto = url.protocol === "https:" ? "wss:" : "ws:";
-    return new Response(JSON.stringify({
-      name: "FlareCall Signaling Server",
-      author: "Sarwar Altaf Dar",
-      github: "https://github.com/techxsarwar",
-      license: "GNU General Public License v3.0 (GPL-3.0)",
-      description: "Real-Time WebRTC Audio & Video Signaling Hub on Cloudflare Workers",
-      version: "1.0.0",
-      status: "running",
-      endpoints: {
-        websocket: `${wsProto}//${url.host}/ws`,
-        health: "/api/health",
-        roomInfo: "/api/room/:roomId"
-      }
-    }, null, 2), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    return new Response(null, {
+      status: 101,
+      webSocket: client
     });
   }
-};
 
-/**
- * Handle a connected WebSocket client session
- * @param {WebSocket} ws 
- */
-function handleWebSocketSession(ws) {
-  let currentRoomId = null;
-  let currentPeerId = null;
-  let peerName = "Anonymous";
+  handleSession(ws) {
+    let currentPeerId = null;
+    let peerName = "Anonymous";
+    let currentRoomId = null;
 
-  // Helper to send JSON securely
-  const send = (data) => {
-    try {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(typeof data === "string" ? data : JSON.stringify(data));
-      }
-    } catch (e) {
-      console.error("[Signaling] Send error:", e);
-    }
-  };
-
-  ws.addEventListener("message", (event) => {
-    try {
-      const rawData = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
-      const msg = JSON.parse(rawData);
-
-      switch (msg.type) {
-        case "ping": {
-          send({ type: "pong", timestamp: Date.now() });
-          break;
+    const send = (data) => {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(typeof data === "string" ? data : JSON.stringify(data));
         }
+      } catch (e) {
+        console.error("[DO Signaling] Send error:", e);
+      }
+    };
 
-        case "join": {
-          const { roomId, peerId, name, mediaState } = msg;
-          if (!roomId || !peerId) {
-            send({ type: "error", message: "roomId and peerId are required to join" });
-            return;
-          }
+    ws.addEventListener("message", (event) => {
+      try {
+        const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+        const msg = JSON.parse(raw);
 
-          currentRoomId = roomId;
-          currentPeerId = peerId;
-          peerName = name || "User " + peerId.substring(0, 4);
+        switch (msg.type) {
+          case "ping":
+            send({ type: "pong", timestamp: Date.now() });
+            break;
 
-          if (!rooms.has(roomId)) {
-            rooms.set(roomId, new Map());
-          }
-          const room = rooms.get(roomId);
+          case "join": {
+            const { roomId, peerId, name, mediaState } = msg;
+            if (!peerId) return;
 
-          // Get existing peers in the room before adding the new one
-          const existingPeers = [];
-          for (const [id, data] of room.entries()) {
-            if (id !== peerId) {
-              existingPeers.push({
-                peerId: id,
-                name: data.name,
-                joinedAt: data.joinedAt,
-                mediaState: data.mediaState || { audio: true, video: true }
-              });
-            }
-          }
+            currentRoomId = roomId;
+            currentPeerId = peerId;
+            peerName = name || "User " + peerId.substring(0, 4);
 
-          // Register new peer
-          room.set(peerId, {
-            ws,
-            name: peerName,
-            joinedAt: Date.now(),
-            mediaState: mediaState || { audio: true, video: true }
-          });
-
-          // Confirm join to the current client
-          send({
-            type: "joined",
-            roomId,
-            peerId,
-            name: peerName,
-            peers: existingPeers,
-            timestamp: Date.now()
-          });
-
-          // Broadcast "peer-joined" to all existing peers in the room
-          for (const [id, data] of room.entries()) {
-            if (id !== peerId && data.ws.readyState === WebSocket.OPEN) {
-              try {
-                data.ws.send(JSON.stringify({
-                  type: "peer-joined",
-                  roomId,
-                  peerId,
-                  name: peerName,
-                  mediaState: mediaState || { audio: true, video: true },
-                  timestamp: Date.now()
-                }));
-              } catch (err) {
-                console.error("[Signaling] Broadcast error:", err);
+            const existingPeers = [];
+            for (const [id, data] of this.peers.entries()) {
+              if (id !== peerId) {
+                existingPeers.push({
+                  peerId: id,
+                  name: data.name,
+                  joinedAt: data.joinedAt,
+                  mediaState: data.mediaState || { audio: true, video: true }
+                });
               }
             }
+
+            this.peers.set(peerId, {
+              ws,
+              name: peerName,
+              joinedAt: Date.now(),
+              mediaState: mediaState || { audio: true, video: true }
+            });
+
+            console.log(`[DO Signaling] Peer ${peerId} joined room ${roomId}. Total: ${this.peers.size}`);
+
+            send({
+              type: "joined",
+              roomId,
+              peerId,
+              name: peerName,
+              peers: existingPeers,
+              timestamp: Date.now()
+            });
+
+            for (const [id, data] of this.peers.entries()) {
+              if (id !== peerId && data.ws.readyState === WebSocket.OPEN) {
+                try {
+                  data.ws.send(JSON.stringify({
+                    type: "peer-joined",
+                    roomId,
+                    peerId,
+                    name: peerName,
+                    mediaState: mediaState || { audio: true, video: true },
+                    timestamp: Date.now()
+                  }));
+                } catch (err) {
+                  console.error("[DO Signaling] Broadcast error:", err);
+                }
+              }
+            }
+            break;
           }
-          break;
-        }
 
-        case "offer":
-        case "answer":
-        case "ice-candidate": {
-          const { roomId, targetPeerId, fromPeerId, sdp, candidate } = msg;
-          if (!roomId || !targetPeerId) return;
-
-          const room = rooms.get(roomId);
-          if (room && room.has(targetPeerId)) {
-            const targetPeer = room.get(targetPeerId);
-            if (targetPeer && targetPeer.ws.readyState === WebSocket.OPEN) {
-              targetPeer.ws.send(JSON.stringify({
+          case "offer":
+          case "answer":
+          case "ice-candidate": {
+            const { targetPeerId, fromPeerId } = msg;
+            if (!targetPeerId) return;
+            const target = this.peers.get(targetPeerId);
+            if (target && target.ws.readyState === WebSocket.OPEN) {
+              target.ws.send(JSON.stringify({
                 ...msg,
                 fromPeerId: fromPeerId || currentPeerId,
                 fromName: peerName
               }));
             }
+            break;
           }
-          break;
-        }
 
-        case "call-request":
-        case "call-response":
-        case "call-hangup": {
-          const { roomId, targetPeerId } = msg;
-          if (!roomId) return;
-
-          const room = rooms.get(roomId);
-          if (room) {
-            if (targetPeerId && room.has(targetPeerId)) {
-              // Direct targeted call control
-              const target = room.get(targetPeerId);
-              if (target && target.ws.readyState === WebSocket.OPEN) {
-                target.ws.send(JSON.stringify({
-                  ...msg,
-                  fromPeerId: currentPeerId,
-                  fromName: peerName
-                }));
-              }
-            } else {
-              // Broadcast to room
-              for (const [id, data] of room.entries()) {
-                if (id !== currentPeerId && data.ws.readyState === WebSocket.OPEN) {
-                  data.ws.send(JSON.stringify({
-                    ...msg,
-                    fromPeerId: currentPeerId,
-                    fromName: peerName
-                  }));
-                }
-              }
-            }
-          }
-          break;
-        }
-
-        case "media-state": {
-          const { roomId, mediaState } = msg;
-          if (!roomId || !currentPeerId) return;
-
-          const room = rooms.get(roomId);
-          if (room) {
-            const peer = room.get(currentPeerId);
+          case "media-state": {
+            const { mediaState } = msg;
+            if (!currentPeerId) return;
+            const peer = this.peers.get(currentPeerId);
             if (peer) peer.mediaState = mediaState;
 
-            for (const [id, data] of room.entries()) {
+            for (const [id, data] of this.peers.entries()) {
               if (id !== currentPeerId && data.ws.readyState === WebSocket.OPEN) {
                 data.ws.send(JSON.stringify({
                   type: "peer-media-state",
-                  roomId,
+                  roomId: currentRoomId,
                   peerId: currentPeerId,
                   mediaState
                 }));
               }
             }
+            break;
           }
-          break;
-        }
 
-        case "chat": {
-          const { roomId, text, timestamp } = msg;
-          if (!roomId) return;
-
-          const room = rooms.get(roomId);
-          if (room) {
+          case "chat": {
+            const { text, timestamp } = msg;
             const chatPayload = JSON.stringify({
               type: "chat",
-              roomId,
+              roomId: currentRoomId,
               fromPeerId: currentPeerId,
               fromName: peerName,
               text,
               timestamp: timestamp || Date.now()
             });
 
-            for (const [id, data] of room.entries()) {
+            for (const [id, data] of this.peers.entries()) {
               if (data.ws.readyState === WebSocket.OPEN) {
                 data.ws.send(chatPayload);
               }
             }
+            break;
           }
-          break;
-        }
 
-        case "leave": {
-          cleanup();
-          break;
+          case "leave":
+            cleanup();
+            break;
         }
-
-        default:
-          console.log("[Signaling] Unhandled message type:", msg.type);
+      } catch (err) {
+        console.error("[DO Signaling] Message error:", err);
       }
-    } catch (err) {
-      console.error("[Signaling] JSON parse/handling error:", err);
-    }
-  });
+    });
 
-  const cleanup = () => {
-    if (currentRoomId && currentPeerId) {
-      const room = rooms.get(currentRoomId);
-      if (room) {
-        room.delete(currentPeerId);
-
-        // Notify remaining peers in the room
-        for (const [id, data] of room.entries()) {
+    const cleanup = () => {
+      if (currentPeerId) {
+        this.peers.delete(currentPeerId);
+        for (const [id, data] of this.peers.entries()) {
           if (data.ws.readyState === WebSocket.OPEN) {
             try {
               data.ws.send(JSON.stringify({
@@ -333,26 +191,130 @@ function handleWebSocketSession(ws) {
                 timestamp: Date.now()
               }));
             } catch (err) {
-              console.error("[Signaling] Leave notify error:", err);
+              console.error("[DO Signaling] Leave notify error:", err);
             }
           }
         }
+        currentPeerId = null;
+      }
+    };
 
-        if (room.size === 0) {
-          rooms.delete(currentRoomId);
+    ws.addEventListener("close", cleanup);
+    ws.addEventListener("error", cleanup);
+  }
+}
+
+const fallbackRooms = new Map();
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    if (url.pathname === "/api/health") {
+      return new Response(JSON.stringify({
+        status: "healthy",
+        author: "Sarwar Altaf Dar",
+        license: "GPL-3.0-or-later",
+        service: "FlareCall Cloudflare Durable Object Signaling Worker"
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.pathname === "/ws" || url.pathname === "/signaling") {
+      if (env.CALL_ROOMS) {
+        const roomId = url.searchParams.get("room") || "default-room";
+        const id = env.CALL_ROOMS.idFromName(roomId);
+        const obj = env.CALL_ROOMS.get(id);
+        return obj.fetch(request);
+      }
+
+      // In-memory fallback if DO is not provisioned
+      const upgradeHeader = request.headers.get("Upgrade");
+      if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
+        return new Response("Expected Upgrade: websocket", { status: 426, headers: corsHeaders });
+      }
+
+      const webSocketPair = new WebSocketPair();
+      const [client, server] = Object.values(webSocketPair);
+      server.accept();
+      handleFallbackSession(server);
+      return new Response(null, { status: 101, webSocket: client, headers: corsHeaders });
+    }
+
+    return new Response("FlareCall Signaling Worker Online", { headers: corsHeaders });
+  }
+};
+
+function handleFallbackSession(ws) {
+  let currentRoomId = null;
+  let currentPeerId = null;
+  let peerName = "Anonymous";
+
+  const send = (data) => {
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(typeof data === "string" ? data : JSON.stringify(data));
+      }
+    } catch (e) {}
+  };
+
+  ws.addEventListener("message", (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "join") {
+        const { roomId, peerId, name, mediaState } = msg;
+        currentRoomId = roomId;
+        currentPeerId = peerId;
+        peerName = name;
+        if (!fallbackRooms.has(roomId)) fallbackRooms.set(roomId, new Map());
+        const room = fallbackRooms.get(roomId);
+        const peers = [];
+        for (const [id, data] of room.entries()) {
+          if (id !== peerId) peers.push({ peerId: id, name: data.name, joinedAt: data.joinedAt, mediaState: data.mediaState });
+        }
+        room.set(peerId, { ws, name, joinedAt: Date.now(), mediaState });
+        send({ type: "joined", roomId, peerId, name, peers, timestamp: Date.now() });
+        for (const [id, data] of room.entries()) {
+          if (id !== peerId && data.ws.readyState === WebSocket.OPEN) {
+            data.ws.send(JSON.stringify({ type: "peer-joined", roomId, peerId, name, mediaState, timestamp: Date.now() }));
+          }
+        }
+      } else if (msg.type === "offer" || msg.type === "answer" || msg.type === "ice-candidate") {
+        const room = fallbackRooms.get(msg.roomId || currentRoomId);
+        if (room && room.has(msg.targetPeerId)) {
+          const target = room.get(msg.targetPeerId);
+          if (target && target.ws.readyState === WebSocket.OPEN) {
+            target.ws.send(JSON.stringify({ ...msg, fromPeerId: currentPeerId, fromName: peerName }));
+          }
         }
       }
-      currentRoomId = null;
-      currentPeerId = null;
+    } catch (e) {}
+  });
+
+  const cleanup = () => {
+    if (currentRoomId && currentPeerId) {
+      const room = fallbackRooms.get(currentRoomId);
+      if (room) {
+        room.delete(currentPeerId);
+        for (const [id, data] of room.entries()) {
+          if (data.ws.readyState === WebSocket.OPEN) {
+            data.ws.send(JSON.stringify({ type: "peer-left", roomId: currentRoomId, peerId: currentPeerId, name: peerName }));
+          }
+        }
+      }
     }
   };
 
-  ws.addEventListener("close", () => {
-    cleanup();
-  });
-
-  ws.addEventListener("error", (e) => {
-    console.error("[Signaling] WebSocket error:", e);
-    cleanup();
-  });
+  ws.addEventListener("close", cleanup);
+  ws.addEventListener("error", cleanup);
 }
