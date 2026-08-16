@@ -122,9 +122,12 @@ run-cli.bat
 
 ## 📖 Complete Integration Guide: Embed FlareCall in Your App
 
+> 📘 **Full Developer Documentation**: See the detailed [**FlareCall Integration Guide**](./docs/INTEGRATION_GUIDE.md) for full WebSocket protocol specifications, React hooks, zero-dependency HTML embeds, Vue.js, Node.js bots, and Android snippets.
+
 You can integrate FlareCall calling into any existing React, Next.js, Vue, Android, or Java application.
 
 ### 🅰️ Integrating into a React / Next.js / Vue / Web App
+
 
 #### Step 1: Copy the WebRTC Service
 Copy [`client-web/src/services/webrtc.js`](./client-web/src/services/webrtc.js) into your application.
