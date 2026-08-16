@@ -18,6 +18,16 @@ export const RTC_CONFIG = {
   bundlePolicy: "max-bundle"
 };
 
+function boostSdpBitrate(sdp, bitrateKbps = 3500) {
+  if (!sdp) return sdp;
+  let modified = sdp;
+  if (!modified.includes("b=AS:") && !modified.includes("b=TIAS:")) {
+    modified = modified.replace(/(m=video[^\r\n]*\r\n)/g, `$1b=AS:${bitrateKbps}\r\nb=TIAS:${bitrateKbps * 1000}\r\n`);
+  }
+  return modified;
+}
+
+
 export class WebRTCService {
   constructor(options = {}) {
     this.localStream = null;
@@ -53,18 +63,42 @@ export class WebRTCService {
       return null;
     }
 
+    let videoConstraints = false;
+    if (constraints.video) {
+      const res = constraints.resolution || "720p (HD)";
+      if (res === "1080p (FHD)" || res === "1080p") {
+        videoConstraints = {
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          frameRate: { ideal: 30, max: 60 },
+          facingMode: "user"
+        };
+      } else if (res === "360p") {
+        videoConstraints = {
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 24 },
+          facingMode: "user"
+        };
+      } else {
+        // Default: 720p High Definition
+        videoConstraints = {
+          width: { ideal: 1280, min: 960 },
+          height: { ideal: 720, min: 540 },
+          frameRate: { ideal: 30, max: 60 },
+          facingMode: "user"
+        };
+      }
+    }
+
     const defaultConstraints = {
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: true
+        autoGainControl: true,
+        sampleRate: 48000
       },
-      video: constraints.video ? {
-        width: { ideal: 640, max: 1280 },
-        height: { ideal: 480, max: 720 },
-        frameRate: { ideal: 24, max: 30 },
-        facingMode: "user"
-      } : false
+      video: videoConstraints
     };
 
     const finalConstraints = {
@@ -82,25 +116,33 @@ export class WebRTCService {
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia(finalConstraints);
     } catch (err) {
-      console.warn("[WebRTC] Failed to acquire video+audio, trying audio-only fallback:", err);
-      // Fallback: Try audio only if video failed (e.g. camera busy or not available)
-      if (finalConstraints.video && finalConstraints.audio) {
-        try {
-          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: finalConstraints.audio, video: false });
-        } catch (audioErr) {
-          console.warn("[WebRTC] Audio-only fallback also failed:", audioErr);
+      console.warn("[WebRTC] High quality capture failed, trying standard fallback:", err);
+      // Fallback: Try standard video or audio only
+      try {
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: constraints.video ? { width: { ideal: 640 }, height: { ideal: 480 } } : false
+        });
+      } catch (fallbackErr) {
+        console.warn("[WebRTC] Standard capture also failed, trying audio only:", fallbackErr);
+        if (finalConstraints.audio) {
+          try {
+            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          } catch (audioErr) {
+            console.warn("[WebRTC] Audio-only fallback also failed:", audioErr);
+            this.localStream = null;
+            throw audioErr;
+          }
+        } else {
           this.localStream = null;
-          throw audioErr;
+          throw fallbackErr;
         }
-      } else {
-        this.localStream = null;
-        throw err;
       }
     }
 
     if (this.localStream) {
       this.setupAudioAnalyser(this.localStream, "local");
-      // Update tracks on all active peer connections
+      // Update tracks on all active peer connections and optimize bitrate
       for (const [peerId, pc] of this.peerConnections.entries()) {
         this.attachLocalTracks(pc);
       }
@@ -133,10 +175,38 @@ export class WebRTCService {
           }
         }
       });
+
+      this.optimizeVideoSender(pc);
     } catch (e) {
       console.warn("[WebRTC] attachLocalTracks error:", e);
     }
   }
+
+  /**
+   * Boost video bitrate on the RTCRtpSender to eliminate blurriness and pixelation
+   */
+  async optimizeVideoSender(pc) {
+    if (!pc) return;
+    try {
+      const senders = pc.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === "video");
+      if (videoSender) {
+        const params = videoSender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxBitrate = 3500000; // 3.5 Mbps HD bitrate
+        params.encodings[0].maxFramerate = 30;
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.degradationPreference = "maintain-resolution";
+        await videoSender.setParameters(params);
+        console.log("[WebRTC] Video sender optimized to 3.5 Mbps High Definition");
+      }
+    } catch (err) {
+      console.warn("[WebRTC] Video sender optimization note:", err);
+    }
+  }
+
 
   /**
    * Start screen sharing and replace video track on active peer connections
@@ -280,7 +350,7 @@ export class WebRTCService {
   }
 
   /**
-   * Create and set local SDP Offer
+   * Create and set local SDP Offer with boosted bandwidth
    */
   async createOffer(peerId) {
     const pc = this.getOrCreatePeerConnection(peerId);
@@ -290,12 +360,19 @@ export class WebRTCService {
       offerToReceiveAudio: true,
       offerToReceiveVideo: true
     });
-    await pc.setLocalDescription(offer);
+
+    const boostedOffer = new RTCSessionDescription({
+      type: offer.type,
+      sdp: boostSdpBitrate(offer.sdp, 3500)
+    });
+
+    await pc.setLocalDescription(boostedOffer);
+    this.optimizeVideoSender(pc);
     return pc.localDescription;
   }
 
   /**
-   * Handle incoming SDP Offer and generate SDP Answer
+   * Handle incoming SDP Offer and generate SDP Answer with boosted bandwidth
    */
   async handleOfferAndCreateAnswer(peerId, remoteSdp) {
     const pc = this.getOrCreatePeerConnection(peerId);
@@ -305,7 +382,13 @@ export class WebRTCService {
     await this.drainQueuedIceCandidates(peerId);
 
     const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const boostedAnswer = new RTCSessionDescription({
+      type: answer.type,
+      sdp: boostSdpBitrate(answer.sdp, 3500)
+    });
+
+    await pc.setLocalDescription(boostedAnswer);
+    this.optimizeVideoSender(pc);
     return pc.localDescription;
   }
 
@@ -317,6 +400,7 @@ export class WebRTCService {
     if (pc && pc.signalingState !== "stable") {
       await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: remoteSdp }));
       await this.drainQueuedIceCandidates(peerId);
+      this.optimizeVideoSender(pc);
     }
   }
 
