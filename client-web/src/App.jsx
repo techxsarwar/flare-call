@@ -7,19 +7,26 @@ import { ShareModal } from "./components/ShareModal";
 import { WebRTCService } from "./services/webrtc";
 import { SoundEngine } from "./services/sounds";
 
-// Cloudflare Signaling WebSocket URL (fallback or remote edge)
+// Cloudflare Signaling WebSocket URL
 const CLOUDFLARE_WORKER_WS = "wss://flare-call-signaling.aarifgmr.workers.dev/ws";
 
 const getSignalingUrl = (currentRoomId) => {
-  const urlParams = new URLSearchParams(window.location.search);
   const roomQuery = currentRoomId ? `?room=${encodeURIComponent(currentRoomId)}` : "";
-  if (urlParams.get("remote") === "true") {
-    return `${CLOUDFLARE_WORKER_WS}${roomQuery}`;
+  const isLocal =
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.port === "5173";
+
+  // If running locally in Vite dev server (port 5173), use integrated local server
+  if (isLocal && window.location.port === "5173") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws${roomQuery}`;
   }
-  // Connect directly to the host that served the application (e.g. wss://localhost:5173/ws or wss://192.168.31.105:5173/ws)
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws${roomQuery}`;
+
+  // Deployed to Cloudflare Pages (flare-call.pages.dev) or remote production
+  return `${CLOUDFLARE_WORKER_WS}${roomQuery}`;
 };
+
 
 
 
