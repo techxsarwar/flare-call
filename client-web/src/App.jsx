@@ -6,14 +6,16 @@ import { SettingsModal } from "./components/SettingsModal";
 import { WebRTCService } from "./services/webrtc";
 import { SoundEngine } from "./services/sounds";
 
-// Default Cloudflare Signaling WebSocket URL
-// Automatically detects localhost or deployed Cloudflare worker
+// Cloudflare Signaling WebSocket URL
+const CLOUDFLARE_WORKER_WS = "wss://flare-call-signaling.aarifgmr.workers.dev/ws";
+
 const getSignalingUrl = () => {
-  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+  // If running on local server port 8787 or explicitly requested, use localhost, otherwise connect to live Cloudflare edge
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get("local") === "true") {
     return "ws://localhost:8787/ws";
   }
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/ws`;
+  return CLOUDFLARE_WORKER_WS;
 };
 
 export default function App() {

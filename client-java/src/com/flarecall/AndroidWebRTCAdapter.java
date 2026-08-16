@@ -3,6 +3,9 @@ package com.flarecall;
 /**
  * Android WebRTC Bridge Adapter
  * 
+ * Developed by: Sarwar Altaf Dar <https://github.com/techxsarwar>
+ * License: GNU General Public License v3.0 (GPL-3.0-or-later)
+ * 
  * Provides an enterprise-grade reference integration pattern for Android applications
  * (such as FitRace / React Native Android native module) connecting to the FlareCall Cloudflare Worker.
  * 

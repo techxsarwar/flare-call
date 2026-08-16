@@ -13,37 +13,45 @@ export function AudioVisualizer({ analyser, active = true, color = "#6366f1", he
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    const render = () => {
-      animationFrameId = requestAnimationFrame(render);
-      analyser.getByteFrequencyData(dataArray);
+    let lastTime = 0;
+    const fpsInterval = 1000 / 30; // Cap visualizer at 30 FPS to save laptop CPU/battery
 
+    const render = (currentTime) => {
+      animationFrameId = requestAnimationFrame(render);
+
+      // Throttle to 30 FPS
+      const elapsed = currentTime - lastTime;
+      if (elapsed < fpsInterval) return;
+      lastTime = currentTime - (elapsed % fpsInterval);
+
+      analyser.getByteFrequencyData(dataArray);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const barWidth = (canvas.width / bufferLength) * 2.2;
+      const barWidth = (canvas.width / bufferLength) * 2.0;
       let x = 0;
 
       for (let i = 0; i < bufferLength; i++) {
-        const barHeight = (dataArray[i] / 255) * (canvas.height * 0.9);
+        const val = dataArray[i];
+        if (val < 5) {
+          x += barWidth;
+          continue;
+        }
 
-        // Smooth glowing gradient
+        const barHeight = (val / 255) * (canvas.height * 0.85);
+
+        // Smooth vertical gradient without heavy shadowBlur
         const gradient = ctx.createLinearGradient(0, canvas.height, 0, canvas.height - barHeight);
         gradient.addColorStop(0, color);
-        gradient.addColorStop(1, "#38bdf8"); // bright cyan top
+        gradient.addColorStop(1, "#38bdf8");
 
         ctx.fillStyle = gradient;
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = color;
-
-        // Rounded pill bars
-        ctx.beginPath();
-        ctx.roundRect(x, canvas.height - barHeight, barWidth - 3, barHeight, [4, 4, 0, 0]);
-        ctx.fill();
+        ctx.fillRect(x, canvas.height - barHeight, barWidth - 3, barHeight);
 
         x += barWidth;
       }
     };
 
-    render();
+    animationFrameId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(animationFrameId);

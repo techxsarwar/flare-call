@@ -46,8 +46,9 @@ export class WebRTCService {
         autoGainControl: true
       },
       video: constraints.video ? {
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 },
+        width: { ideal: 640, max: 1280 },
+        height: { ideal: 480, max: 720 },
+        frameRate: { ideal: 24, max: 30 },
         facingMode: "user"
       } : false
     };
@@ -279,13 +280,26 @@ export class WebRTCService {
       }
 
       if (this.audioContext && stream.getAudioTracks().length > 0) {
+        if (type === "local" && this.localSource) {
+          try { this.localSource.disconnect(); } catch (_) {}
+        }
+        if (type === "remote" && this.remoteSource) {
+          try { this.remoteSource.disconnect(); } catch (_) {}
+        }
+
         const source = this.audioContext.createMediaStreamSource(stream);
         const analyser = this.audioContext.createAnalyser();
-        analyser.fftSize = 64;
+        analyser.fftSize = 32;
+        analyser.smoothingTimeConstant = 0.8;
         source.connect(analyser);
 
-        if (type === "local") this.localAnalyser = analyser;
-        else this.remoteAnalyser = analyser;
+        if (type === "local") {
+          this.localSource = source;
+          this.localAnalyser = analyser;
+        } else {
+          this.remoteSource = source;
+          this.remoteAnalyser = analyser;
+        }
       }
     } catch (e) {
       console.warn("Audio analyser setup skipped:", e);

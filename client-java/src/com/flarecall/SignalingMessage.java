@@ -5,6 +5,9 @@ import java.util.*;
 /**
  * Lightweight JSON parser and builder for FlareCall signaling messages.
  * Designed to compile and run with standard Java 11+ with zero external JAR dependencies.
+ * 
+ * Developed by: Sarwar Altaf Dar <https://github.com/techxsarwar>
+ * License: GNU General Public License v3.0 (GPL-3.0-or-later)
  */
 public class SignalingMessage {
     public String type;

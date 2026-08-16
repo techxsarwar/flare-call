@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
+  "author": "Sarwar Altaf Dar <https://github.com/techxsarwar>",
+  "license": "GPL-3.0-or-later",
   "devDependencies": {
     "wrangler": "^3.109.2"
   }

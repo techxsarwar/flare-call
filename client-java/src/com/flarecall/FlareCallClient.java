@@ -10,6 +10,10 @@ import java.util.concurrent.*;
 
 /**
  * FlareCall Java Client
+ * 
+ * Developed by: Sarwar Altaf Dar <https://github.com/techxsarwar>
+ * License: GNU General Public License v3.0 (GPL-3.0-or-later)
+ * 
  * Connects to the Cloudflare Worker signaling server and coordinates WebRTC calls.
  */
 public class FlareCallClient implements WebSocket.Listener {

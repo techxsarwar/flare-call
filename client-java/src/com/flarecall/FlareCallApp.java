@@ -10,8 +10,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.Scanner;
 
 /**
- * Interactive Java Application for FlareCall
- * Supports both modern Swing UI and Command-Line Interface.
+ * FlareCall Java Desktop Client (Swing GUI & Interactive CLI)
+ * 
+ * Developed by: Sarwar Altaf Dar <https://github.com/techxsarwar>
+ * License: GNU General Public License v3.0 (GPL-3.0-or-later)
  */
 public class FlareCallApp implements CallEventListener {
 
@@ -59,7 +61,7 @@ public class FlareCallApp implements CallEventListener {
             UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName());
         } catch (Exception ignored) {}
 
-        frame = new JFrame("FlareCall Java Client - Real-Time WebRTC Calling");
+        frame = new JFrame("FlareCall - Real-Time WebRTC Calling (By Sarwar Altaf Dar)");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(950, 680);
         frame.setLocationRelativeTo(null);
@@ -84,7 +86,7 @@ public class FlareCallApp implements CallEventListener {
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
         row1.setOpaque(false);
         row1.add(createLabel("Signaling URL:", textWhite));
-        urlField = new JTextField("ws://localhost:8787/ws", 22);
+        urlField = new JTextField("wss://flare-call-signaling.aarifgmr.workers.dev/ws", 28);
         styleTextField(urlField);
         row1.add(urlField);
 
@@ -189,6 +191,17 @@ public class FlareCallApp implements CallEventListener {
 
         frame.add(splitPane, BorderLayout.CENTER);
 
+        // Bottom Footer Bar
+        JPanel footerBar = new JPanel(new BorderLayout(8, 0));
+        footerBar.setBackground(bgDark);
+        footerBar.setBorder(new EmptyBorder(6, 16, 8, 16));
+
+        JLabel creditsLabel = createLabel("FlareCall • Developed by Sarwar Altaf Dar (https://github.com/techxsarwar)", textMuted, 11, false);
+        JLabel licenseLabel = createLabel("GPLv3 Open Source", new Color(129, 140, 248), 11, true);
+        footerBar.add(creditsLabel, BorderLayout.WEST);
+        footerBar.add(licenseLabel, BorderLayout.EAST);
+        frame.add(footerBar, BorderLayout.SOUTH);
+
         // Event Listeners
         connectBtn.addActionListener(e -> {
             String url = urlField.getText().trim();
@@ -244,15 +257,17 @@ public class FlareCallApp implements CallEventListener {
 
     private void startCli() {
         System.out.println("==================================================");
-        System.out.println("     FlareCall Java Interactive Calling CLI      ");
+        System.out.println("     FlareCall Java Calling Client (CLI Mode)    ");
+        System.out.println("   Author: Sarwar Altaf Dar (github.com/techxsarwar) ");
+        System.out.println("   License: GNU General Public License v3.0 (GPLv3)");
         System.out.println("==================================================");
         System.out.println("Your Peer ID: " + client.getPeerId());
         System.out.println("Display Name: " + client.getDisplayName());
 
         Scanner scanner = new Scanner(System.in);
-        System.out.print("Enter Cloudflare Signaling URL [ws://localhost:8787/ws]: ");
+        System.out.print("Enter Cloudflare Signaling URL [wss://flare-call-signaling.aarifgmr.workers.dev/ws]: ");
         String url = scanner.nextLine().trim();
-        if (url.isEmpty()) url = "ws://localhost:8787/ws";
+        if (url.isEmpty()) url = "wss://flare-call-signaling.aarifgmr.workers.dev/ws";
 
         client.connect(url).join();
 

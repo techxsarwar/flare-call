@@ -1,6 +1,9 @@
 /**
  * FlareCall Cloudflare Worker - WebRTC Signaling & Room Management
  * 
+ * Developed by: Sarwar Altaf Dar <https://github.com/techxsarwar>
+ * License: GNU General Public License v3.0 (GPL-3.0-or-later)
+ * 
  * Provides ultra-low latency WebSocket signaling for WebRTC peer-to-peer audio/video calls.
  * Works seamlessly with Web (React/Vite), Mobile (React Native/Android), and Native Java clients.
  */
@@ -28,6 +31,8 @@ export default {
     if (url.pathname === "/api/health") {
       return new Response(JSON.stringify({
         status: "healthy",
+        author: "Sarwar Altaf Dar",
+        license: "GPL-3.0-or-later",
         timestamp: new Date().toISOString(),
         activeRooms: rooms.size,
         service: "FlareCall Cloudflare Signaling Worker"
@@ -78,13 +83,17 @@ export default {
     }
 
     // Root Welcome endpoint
+    const wsProto = url.protocol === "https:" ? "wss:" : "ws:";
     return new Response(JSON.stringify({
       name: "FlareCall Signaling Server",
+      author: "Sarwar Altaf Dar",
+      github: "https://github.com/techxsarwar",
+      license: "GNU General Public License v3.0 (GPL-3.0)",
       description: "Real-Time WebRTC Audio & Video Signaling Hub on Cloudflare Workers",
       version: "1.0.0",
       status: "running",
       endpoints: {
-        websocket: "wss://<your-worker>/ws",
+        websocket: `${wsProto}//${url.host}/ws`,
         health: "/api/health",
         roomInfo: "/api/room/:roomId"
       }
