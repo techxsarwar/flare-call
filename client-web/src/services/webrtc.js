@@ -209,6 +209,14 @@ export class WebRTCService {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     this.peerConnections.set(peerId, pc);
 
+    // Explicitly add sendrecv transceivers to negotiate both audio and video
+    try {
+      pc.addTransceiver("audio", { direction: "sendrecv" });
+      pc.addTransceiver("video", { direction: "sendrecv" });
+    } catch (e) {
+      console.warn("[WebRTC] addTransceiver note:", e);
+    }
+
     // Attach local media tracks if ready
     this.attachLocalTracks(pc);
 
@@ -229,9 +237,17 @@ export class WebRTCService {
         stream.addTrack(event.track);
       }
 
+      if (event.track) {
+        event.track.onunmute = () => {
+          console.log(`[WebRTC] Track unmuted (${event.track.kind}) for peer ${peerId}`);
+          this.onRemoteStream(peerId, stream);
+        };
+      }
+
       this.setupAudioAnalyser(stream, "remote");
       this.onRemoteStream(peerId, stream);
     };
+
 
     // Handle ICE Candidate generation
     pc.onicecandidate = (event) => {

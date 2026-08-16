@@ -52,6 +52,27 @@ export function CallView({
   const [copiedLink, setCopiedLink] = useState(false);
   const [showStatsHud, setShowStatsHud] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [trackVersion, setTrackVersion] = useState(0);
+
+  // Re-evaluate video availability when tracks arrive or unmute
+  useEffect(() => {
+    const cleanups = [];
+    remoteStreams.forEach((stream) => {
+      const triggerUpdate = () => setTrackVersion(v => v + 1);
+      stream.addEventListener("addtrack", triggerUpdate);
+      stream.addEventListener("removetrack", triggerUpdate);
+      stream.getTracks().forEach(t => {
+        t.addEventListener("mute", triggerUpdate);
+        t.addEventListener("unmute", triggerUpdate);
+        t.addEventListener("ended", triggerUpdate);
+      });
+      cleanups.push(() => {
+        stream.removeEventListener("addtrack", triggerUpdate);
+        stream.removeEventListener("removetrack", triggerUpdate);
+      });
+    });
+    return () => cleanups.forEach(fn => fn());
+  }, [remoteStreams]);
 
   // Bind local video stream
   useEffect(() => {
@@ -75,7 +96,8 @@ export function CallView({
         aEl.play().catch(e => console.log("[WebRTC] Audio autoPlay waiting for user gesture:", e));
       }
     });
-  }, [remoteStreams]);
+  }, [remoteStreams, trackVersion]);
+
 
   const copyRoomLink = () => {
     const url = `${window.location.origin}/?room=${encodeURIComponent(roomId)}`;
@@ -239,7 +261,8 @@ export function CallView({
           <div className={`remote-videos-grid count-${activePeerList.length}`}>
             {activePeerList.map(peer => {
               const stream = remoteStreams.get(peer.peerId);
-              const hasVideo = stream && stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled;
+              const videoTracks = stream ? stream.getVideoTracks() : [];
+              const hasVideo = videoTracks.length > 0 && videoTracks[0].enabled && !videoTracks[0].muted;
 
               return (
                 <div key={peer.peerId} className="peer-video-tile">
@@ -264,13 +287,18 @@ export function CallView({
                         remoteVideoRefs.current.set(peer.peerId, el);
                         if (stream && el.srcObject !== stream) {
                           el.srcObject = stream;
+                        }
+                        if (el.paused && stream) {
                           el.play().catch(() => {});
                         }
                       }
                     }}
                     autoPlay
                     playsInline
-                    className={`peer-video-element ${hasVideo ? "visible" : "hidden"}`}
+                    muted={false}
+                    onLoadedMetadata={e => e.target.play().catch(() => {})}
+                    className="peer-video-element"
+                    style={{ display: hasVideo ? "block" : "none" }}
                   />
 
                   {/* Fallback Audio-Only Avatar if Video Disabled */}
@@ -284,6 +312,7 @@ export function CallView({
                       <AudioVisualizer analyser={remoteAnalyser} active={true} color="#38bdf8" height={60} />
                     </div>
                   )}
+
 
                   {/* Tile Bottom Info Bar */}
                   <div className="peer-tile-footer">
