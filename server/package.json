@@ -1,0 +1,13 @@
+{
+  "name": "flare-call-server",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker WebSocket Signaling Server for FlareCall WebRTC",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.109.2"
+  }
+}

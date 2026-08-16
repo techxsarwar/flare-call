@@ -1,0 +1,25 @@
+{
+  "name": "flare-call",
+  "version": "1.0.0",
+  "description": "Real-time audio & video calling system on Cloudflare Workers (WebSockets) + WebRTC + React & Java SDK",
+  "private": true,
+  "scripts": {
+    "dev:server": "cd server && npx wrangler dev",
+    "deploy:server": "cd server && npx wrangler deploy",
+    "dev:web": "cd client-web && npm run dev",
+    "build:web": "cd client-web && npm run build",
+    "build:java": "javac -d client-java/bin client-java/src/com/flarecall/*.java",
+    "run:java": "java -cp client-java/bin com.flarecall.FlareCallApp"
+  },
+  "keywords": [
+    "webrtc",
+    "cloudflare-workers",
+    "video-calling",
+    "audio-calling",
+    "websockets",
+    "react",
+    "java"
+  ],
+  "author": "",
+  "license": "MIT"
+}

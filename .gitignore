@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Cloudflare & Wrangler
+.wrangler/
+.mf/
+
+# Production build outputs
+dist/
+build/
+
+# Java compiled binaries
+client-java/bin/
+*.class
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# Logs & Environment
+*.log
+.env
+.env.local
